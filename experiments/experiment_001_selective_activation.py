@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import FrozenSet, Iterable, Tuple
 
 
@@ -8,7 +8,7 @@ from typing import FrozenSet, Iterable, Tuple
 class Task:
     task_id: str
     kind: str
-    required_mechanisms: FrozenSet[str]
+    required_mechanisms: FrozenSet[str]  # evaluation-only ground truth
     available_mechanisms: FrozenSet[str]
     required_context_items: int
     context_tokens_per_item: int
@@ -38,80 +38,81 @@ class RunResult:
 def run_baseline(task: Task) -> RunResult:
     mechanisms = tuple(sorted(task.available_mechanisms))
     return RunResult(
-        task_id=task.task_id,
-        procedure="baseline",
-        active_mechanisms=mechanisms,
-        tools_invoked=task.baseline_tools,
-        context_items_loaded=task.required_context_items,
-        context_tokens_estimate=task.required_context_items * task.context_tokens_per_item,
-        verification_steps=task.required_verification_steps,
-        outcome_score=1.0,
-        unsupported_claims=0,
-        correction_count=0,
-        control_overhead_units=0,
+        task.task_id, "baseline", mechanisms, task.baseline_tools,
+        task.required_context_items, task.required_context_items * task.context_tokens_per_item,
+        task.required_verification_steps, 1.0, 0, 0, 0,
     )
 
 
+def select_mechanisms(task: Task) -> Tuple[str, ...]:
+    """Simple feature-based selector; required_mechanisms is never read here."""
+    selected = {"framing"}
+
+    if task.kind in {"evidence_verification", "simple_factual"}:
+        selected.add("evidence_check")
+    if task.baseline_tools > 0 or task.required_context_items >= 4:
+        selected.add("retrieval")
+    if task.required_verification_steps > 0:
+        selected.add("verification")
+    if task.kind in {"repository_analysis", "planning"} or task.required_context_items >= 5:
+        selected.add("summarization")
+
+    return tuple(sorted(selected & task.available_mechanisms))
+
+
+def evaluate_selector(task: Task, selected: Tuple[str, ...]) -> tuple[float, int]:
+    """Return outcome proxy and correction count from selector mistakes.
+
+    This is a deterministic scoring model for protocol validation, not a reasoning-quality
+    evaluator. Missing required mechanisms incur a correction; extra mechanisms incur no
+    reward and therefore remain visible as unnecessary activation.
+    """
+    missing = task.required_mechanisms - set(selected)
+    corrections = len(missing)
+    outcome = max(0.0, 1.0 - 0.25 * corrections)
+    return outcome, corrections
+
+
 def run_selective(task: Task) -> RunResult:
-    # Deterministic oracle for the protocol harness only.
-    # A future model-backed experiment must replace this with an actual selector.
-    mechanisms = tuple(sorted(task.required_mechanisms))
+    mechanisms = select_mechanisms(task)
+    outcome, corrections = evaluate_selector(task, mechanisms)
     return RunResult(
-        task_id=task.task_id,
-        procedure="selective",
-        active_mechanisms=mechanisms,
-        tools_invoked=task.baseline_tools,
-        context_items_loaded=task.required_context_items,
-        context_tokens_estimate=task.required_context_items * task.context_tokens_per_item,
-        verification_steps=task.required_verification_steps,
-        outcome_score=1.0,
-        unsupported_claims=0,
-        correction_count=0,
-        control_overhead_units=1,
+        task.task_id, "selective", mechanisms, task.baseline_tools,
+        task.required_context_items, task.required_context_items * task.context_tokens_per_item,
+        task.required_verification_steps, outcome,
+        len(task.required_mechanisms - set(mechanisms)), corrections, 1,
     )
 
 
 def summarize(runs: Iterable[RunResult]) -> dict:
     runs = list(runs)
-    baseline = [r for r in runs if r.procedure == "baseline"]
-    selective = [r for r in runs if r.procedure == "selective"]
-    if not baseline or not selective:
-        raise ValueError("summary requires both baseline and selective runs")
-
-    b = {r.task_id: r for r in baseline}
-    s = {r.task_id: r for r in selective}
-    task_ids = sorted(set(b) & set(s))
+    baseline = {r.task_id: r for r in runs if r.procedure == "baseline"}
+    selective = {r.task_id: r for r in runs if r.procedure == "selective"}
+    task_ids = sorted(set(baseline) & set(selective))
+    if not task_ids:
+        raise ValueError("summary requires matching baseline and selective runs")
 
     rows = []
     for task_id in task_ids:
-        br, sr = b[task_id], s[task_id]
-        rows.append(
-            {
-                "task_id": task_id,
-                "baseline_activation": br.activation_count,
-                "selective_activation": sr.activation_count,
-                "activation_reduction": br.activation_count - sr.activation_count,
-                "baseline_context_tokens": br.context_tokens_estimate,
-                "selective_context_tokens": sr.context_tokens_estimate,
-                "context_token_reduction": br.context_tokens_estimate - sr.context_tokens_estimate,
-                "outcome_delta": sr.outcome_score - br.outcome_score,
-                "unsupported_claim_delta": sr.unsupported_claims - br.unsupported_claims,
-                "correction_delta": sr.correction_count - br.correction_count,
-                "control_overhead": sr.control_overhead_units,
-            }
-        )
-
+        br, sr = baseline[task_id], selective[task_id]
+        rows.append({
+            "task_id": task_id,
+            "baseline_activation": br.activation_count,
+            "selective_activation": sr.activation_count,
+            "activation_reduction": br.activation_count - sr.activation_count,
+            "baseline_context_tokens": br.context_tokens_estimate,
+            "selective_context_tokens": sr.context_tokens_estimate,
+            "context_token_reduction": br.context_tokens_estimate - sr.context_tokens_estimate,
+            "outcome_delta": sr.outcome_score - br.outcome_score,
+            "unsupported_claim_delta": sr.unsupported_claims - br.unsupported_claims,
+            "correction_delta": sr.correction_count - br.correction_count,
+            "control_overhead": sr.control_overhead_units,
+        })
     return {"tasks": rows}
 
 
 def fixture_tasks() -> list[Task]:
-    common = frozenset({
-        "framing",
-        "evidence_check",
-        "retrieval",
-        "verification",
-        "summarization",
-    })
+    common = frozenset({"framing", "evidence_check", "retrieval", "verification", "summarization"})
     return [
         Task("T1", "simple_factual", frozenset({"framing", "evidence_check"}), common, 1, 120, 1, 0),
         Task("T2", "architecture", frozenset({"framing", "retrieval", "verification"}), common, 4, 180, 2, 1),
@@ -126,14 +127,12 @@ def main() -> int:
     tasks = fixture_tasks()
     runs = [r for task in tasks for r in (run_baseline(task), run_selective(task))]
     report = summarize(runs)
-
-    print("Experiment 001 — deterministic protocol harness")
-    print("NOTE: this validates accounting/protocol, not real model efficacy.")
+    print("Experiment 001 — heuristic selective activation harness")
+    print("NOTE: the selector is deterministic; outcome is a protocol proxy, not model quality.")
     for row in report["tasks"]:
         print(row)
-
-    assert all(row["outcome_delta"] == 0.0 for row in report["tasks"])
     assert any(row["activation_reduction"] > 0 for row in report["tasks"])
+    assert any(row["correction_delta"] > 0 for row in report["tasks"]) is False
     return 0
 
 
