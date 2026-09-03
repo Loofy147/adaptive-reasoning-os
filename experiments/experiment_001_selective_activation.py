@@ -45,9 +45,8 @@ def run_baseline(task: Task) -> RunResult:
 
 
 def select_mechanisms(task: Task) -> Tuple[str, ...]:
-    """Simple feature-based selector; required_mechanisms is never read here."""
+    """Feature-based heuristic selector; the ground-truth field is never read."""
     selected = {"framing"}
-
     if task.kind in {"evidence_verification", "simple_factual"}:
         selected.add("evidence_check")
     if task.baseline_tools > 0 or task.required_context_items >= 4:
@@ -56,17 +55,11 @@ def select_mechanisms(task: Task) -> Tuple[str, ...]:
         selected.add("verification")
     if task.kind in {"repository_analysis", "planning"} or task.required_context_items >= 5:
         selected.add("summarization")
-
     return tuple(sorted(selected & task.available_mechanisms))
 
 
 def evaluate_selector(task: Task, selected: Tuple[str, ...]) -> tuple[float, int]:
-    """Return outcome proxy and correction count from selector mistakes.
-
-    This is a deterministic scoring model for protocol validation, not a reasoning-quality
-    evaluator. Missing required mechanisms incur a correction; extra mechanisms incur no
-    reward and therefore remain visible as unnecessary activation.
-    """
+    """Deterministic protocol proxy: missing required mechanisms cause corrections."""
     missing = task.required_mechanisms - set(selected)
     corrections = len(missing)
     outcome = max(0.0, 1.0 - 0.25 * corrections)
@@ -127,12 +120,17 @@ def main() -> int:
     tasks = fixture_tasks()
     runs = [r for task in tasks for r in (run_baseline(task), run_selective(task))]
     report = summarize(runs)
-    print("Experiment 001 — heuristic selective activation harness")
-    print("NOTE: the selector is deterministic; outcome is a protocol proxy, not model quality.")
+    reductions = [row["activation_reduction"] for row in report["tasks"]]
+    corrections = [row["correction_delta"] for row in report["tasks"]]
+    print("Experiment 001 — heuristic selective activation")
+    print("Protocol-only result: the heuristic selector matches this six-task fixture.")
+    print("This is not evidence of model reasoning improvement or generalization.")
+    print(f"Mean activation reduction: {sum(reductions) / len(reductions):.2f} mechanisms/task")
+    print(f"Selector corrections: {sum(corrections)}")
     for row in report["tasks"]:
         print(row)
-    assert any(row["activation_reduction"] > 0 for row in report["tasks"])
-    assert any(row["correction_delta"] > 0 for row in report["tasks"]) is False
+    assert sum(reductions) > 0
+    assert sum(corrections) == 0
     return 0
 
 
