@@ -1,6 +1,6 @@
 # Experiment 001 — Current Result
 
-Date: 2026-09-03
+Date: 2026-09-04 review update
 
 ## Scope
 
@@ -12,7 +12,9 @@ It is a **protocol result**, not evidence that an LLM reasons better with select
 
 The selector uses task features (`kind`, `baseline_tools`, `required_context_items`, `required_verification_steps`) and does **not** read `required_mechanisms` while selecting. The latter is evaluation-only ground truth.
 
-## Fixture result
+## Current fixture result
+
+The current selector matches the evaluation ground truth on all six fixtures:
 
 | Task | Baseline mechanisms | Selected mechanisms | Reduction | Outcome delta | Corrections |
 |---|---:|---:|---:|---:|---:|
@@ -23,11 +25,17 @@ The selector uses task features (`kind`, `baseline_tools`, `required_context_ite
 | T5 planning | 5 | 3 | 2 | 0.00 | 0 |
 | T6 evidence verification | 5 | 4 | 1 | 0.00 | 0 |
 
-Mean activation reduction: **1.83 mechanisms/task** (36.7% of the five available mechanisms in this fixture).
+Total activation reduction: **11 mechanisms across 6 tasks**.
+
+Mean activation reduction: **1.83 mechanisms/task** (**36.7%** of the five available mechanisms in this fixture).
 
 Context-token reduction: **0**. The experiment intentionally keeps context loading constant so it isolates activation selection.
 
 Selector corrections: **0** on this fixture.
+
+## Important CI correction
+
+An earlier workflow run proved that the harness itself executed successfully but failed because `pytest` was not installed in the GitHub Actions environment. The workflow now installs the test dependency explicitly before invoking pytest.
 
 ## Interpretation
 
@@ -39,7 +47,8 @@ The result does **not** establish:
 - lower real token usage;
 - generalization to unseen tasks;
 - superiority over a strong baseline;
-- correctness of the heuristic feature rules.
+- correctness of the heuristic feature rules;
+- benefit after accounting for real selector cost.
 
 ## Next test required
 
